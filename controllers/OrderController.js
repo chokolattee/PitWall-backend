@@ -1,8 +1,63 @@
 const Order = require('../models/Order');
-const Product = require('../models/Product');
+const { Product } = require('../models/Product');
 const admin = require('../firebase_backend/firebaseAdmin'); 
 const User = require('../models/User');
 const { sendOrderStatusEmail } = require('../utils/email');
+
+const buildStockError = (message, statusCode = 400) => {
+    const error = new Error(message);
+    error.statusCode = statusCode;
+    return error;
+};
+
+const aggregateOrderItemQuantities = (orderItems = []) => {
+    const quantityMap = new Map();
+
+    for (const item of orderItems) {
+        const productId = item?.productId?.toString?.();
+        const quantity = Number(item?.quantity) || 0;
+
+        if (!productId || quantity <= 0) continue;
+        quantityMap.set(productId, (quantityMap.get(productId) || 0) + quantity);
+    }
+
+    return quantityMap;
+};
+
+const syncStockForOrder = async (orderItems = [], action = 'decrease') => {
+    const quantityMap = aggregateOrderItemQuantities(orderItems);
+    if (quantityMap.size === 0) return;
+
+    const productIds = [...quantityMap.keys()];
+    const products = await Product.find({ _id: { $in: productIds } }).select('_id stock');
+
+    if (products.length !== productIds.length) {
+        throw buildStockError('One or more products in this order no longer exist', 404);
+    }
+
+    const stockById = new Map(
+        products.map(product => [product._id.toString(), Number(product.stock) || 0])
+    );
+
+    if (action === 'decrease') {
+        for (const [productId, quantity] of quantityMap.entries()) {
+            const currentStock = stockById.get(productId) || 0;
+            if (currentStock < quantity) {
+                throw buildStockError('Insufficient stock to confirm this order');
+            }
+        }
+    }
+
+    const multiplier = action === 'decrease' ? -1 : 1;
+    const bulkOperations = [...quantityMap.entries()].map(([productId, quantity]) => ({
+        updateOne: {
+            filter: { _id: productId },
+            update: { $inc: { stock: multiplier * quantity } }
+        }
+    }));
+
+    await Product.bulkWrite(bulkOperations);
+};
 
 // Create new order
 exports.createOrder = async (req, res) => {
@@ -232,6 +287,16 @@ exports.updateOrder = async (req, res) => {
             });
         }
 
+        const currentStatus = order.orderStatus;
+
+        if (currentStatus === 'Processing' && newStatus === 'Confirmed') {
+            await syncStockForOrder(order.orderItems, 'decrease');
+        }
+
+        if (currentStatus === 'Confirmed' && newStatus === 'Cancelled') {
+            await syncStockForOrder(order.orderItems, 'increase');
+        }
+
         order.orderStatus = newStatus;
         
         if (newStatus === 'Delivered') {
@@ -332,7 +397,8 @@ exports.updateOrder = async (req, res) => {
         });
     } catch (error) {
         console.error('Error updating order:', error);
-        res.status(500).json({
+        const statusCode = error.statusCode || 500;
+        res.status(statusCode).json({
             success: false,
             message: error.message
         });
@@ -486,6 +552,12 @@ exports.cancelOrderStatus = async (req, res) => {
 
         const cancellationReason = req.body.reason || 'Cancelled by customer';
 
+        const currentStatus = order.orderStatus;
+
+        if (currentStatus === 'Confirmed') {
+            await syncStockForOrder(order.orderItems, 'increase');
+        }
+
         order.orderStatus = 'Cancelled';
         order.cancellationReason = cancellationReason;
         order.cancelledAt = Date.now();
@@ -541,7 +613,8 @@ exports.cancelOrderStatus = async (req, res) => {
         });
     } catch (error) {
         console.error('Error in user order cancellation:', error);
-        res.status(500).json({
+        const statusCode = error.statusCode || 500;
+        res.status(statusCode).json({
             success: false,
             message: 'Something went wrong while cancelling your order',
             error: error.message
