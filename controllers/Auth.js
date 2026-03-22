@@ -3,11 +3,11 @@ const User = require("../models/User");
 const cloudinary = require('cloudinary').v2;
 const mongoose = require('mongoose');
 const crypto = require('crypto');
-const { OAuth2Client } = require('google-auth-library'); // Import Google Auth Library
+const { OAuth2Client } = require('google-auth-library'); 
 const client = new OAuth2Client('893426226343-6s9mpjtmoe188rhfqtptmndf6td92hec.apps.googleusercontent.com'); 
 
 exports.Register = async function (req, res) {
-    const session = await mongoose.startSession(); // Start a session for transaction
+    const session = await mongoose.startSession(); 
     session.startTransaction();
 
     try {

@@ -18,16 +18,21 @@ exports.createOrder = async (req, res) => {
             totalPrice
         } = req.body;
 
+        const normalizedPaymentInfo = {
+            ...(paymentInfo || {}),
+            method: (paymentInfo?.method || '').replace(/\s*\/\s*/g, '/').trim()
+        };
+
         const order = await Order.create({
             shippingInfo,
             orderItems,
-            paymentInfo,
+            paymentInfo: normalizedPaymentInfo,
             voucher: voucher || {},
             subtotal,
             shippingFee: shippingFee || 100,
             discountAmount: discountAmount || 0,
             totalPrice,
-            paidAt: paymentInfo.method === 'Cash on Delivery' ? null : Date.now(),
+            paidAt: normalizedPaymentInfo.method === 'Cash on Delivery' ? null : Date.now(),
             user: req.userId
         });
 
